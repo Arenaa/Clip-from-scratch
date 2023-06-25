@@ -1,4 +1,4 @@
-from functools import partial
+from functools import partial, wraps
 
 import torch
 import torch.nn as nn
@@ -6,10 +6,24 @@ import torch.nn.functional as F
 from einops import rearrange, reduce, repeat
 from einops.layers.torch import Rearrange, Reduce
 from torch import einsum
+from torch.utils.checkpoint import checkpoint
 
 
 def exists(val):
     return val is not None
+
+def identity(t, *args, **kwargs):
+    return t
+
+def make_checkpoint(fn):
+    @wraps(fn)
+    def inner(*args):
+        input_needs_grad = any([[isinstance(el, torch.Tensor) and el.requires_grad for el in args]])
+
+        if not input_needs_grad:
+            return fn(*args)
+
+        return checkpoint(fn, *args)
 
 def rotate_half(x):
     x = rearrange(x, '... (j d) -> ... j d', j = 2)
@@ -138,3 +152,34 @@ class Attention(nn.Module):
         out = einsum('b h i j, b h j d -> b h i d', attn, v)
         out = rearrange(out, 'b h n d -> b n (h d)')
         return self.to_out(out)
+
+class Transforemr(nn.Module):
+    def __init__(self, dim, *, depth, dim_head=64, heads=8,
+                 causal=False, attn_dropout=0, ff_dropout=0., ff_mult=4,
+                 checkpoint_during_training=False):
+        super().__init__()
+        self.checkpoint_during_training = checkpoint_during_training
+
+        self.layers = nn.ModuleList([])
+        for _ in range(depth):
+            self.layers.append(nn.ModuleList([
+                PreNorm(dim, Attention(dim=dim, dim_head=dim_head, heads=heads, causal=causal, dropout=attn_dropout)),
+                PreNorm(dim, FeedForward(dim=dim, mult=ff_mult))
+            ]))
+
+        self.norm_in = LayerNorm(dim)
+        self.norm_out = LayerNorm(dim)
+
+    def forward(self, x, rotary_pos_emb=None, mask=None):
+        can_checkpoint = self.training and self.checkpoint_during_training
+        checkpint_fn = make_checkpoint if can_checkpoint else identity
+
+        x = self.norm_in(x)
+
+        for attn, ff in self.layers:
+            attn, ff = map(checkpint_fn, (attn, ff))
+
+            x = attn(x, mask, rotary_pos_emb) + x
+            x = ff(x) + x
+
+        return self.norm_out(x)
