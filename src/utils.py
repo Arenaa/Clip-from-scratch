@@ -155,7 +155,7 @@ class Attention(nn.Module):
 
 class Transforemr(nn.Module):
     def __init__(self, dim, *, depth, dim_head=64, heads=8,
-                 causal=False, attn_dropout=0, ff_dropout=0., ff_mult=4,
+                 causal=False, attn_dropout=0, ff_mult=4,
                  checkpoint_during_training=False):
         super().__init__()
         self.checkpoint_during_training = checkpoint_during_training
@@ -183,3 +183,39 @@ class Transforemr(nn.Module):
             x = ff(x) + x
 
         return self.norm_out(x)
+
+class TextTransformer(nn.Module):
+    def __init__(self, dim, *, num_tokens, max_seq_len,
+                 dim_head, rotary_pos_dim=None, causal=False, **kwargs):
+
+        super().__init__()
+        self.token_emb = nn.Embedding(num_tokens, dim)
+
+        self.abs_pos_emb = nn.Embedding(max_seq_len, dim) if not rotary_pos_dim else None
+        self.rotary_pos_emb = RotaryEmbedding(min(dim_head, 32)) if rotary_pos_dim else None
+
+        self.cls_token = nn.Parameter(torch.randn(dim)) if not causal else None
+
+        self.transformer = Transforemr(dim, dim_head=dim_head, causal=causal, **kwargs)
+
+    def forward(self, x, mask=None):
+        b, n, device = *x.shape, x.device
+
+        x = self.token_emb(x)
+
+        if exists(self.abs_pos_emb):
+            pos_emb = self.abs_pos_emb(torch.arange(n, device=device))
+            x = x + rearrange(pos_emb, 'n d -> 1 n d')
+
+        if exists(self.rotary_pos_emb):
+            rotary_pos_dim = self.rotary_pos_emb(n + 1, device=device)
+
+        if exists(self.cls_token):
+            cls_tokens = repeat(self.cls_token, 'd -> b 1 d', b=b)
+            x = torch.cat((cls_tokens, x), dim=1)
+
+            if exists(mask):
+                mask = F.pad(mask, (1, 0), value=True)
+
+        out = self.transformer(x, mask=mask, rotary_pos_dim=rotary_pos_dim)
+        return out
