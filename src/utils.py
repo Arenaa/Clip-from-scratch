@@ -219,3 +219,44 @@ class TextTransformer(nn.Module):
 
         out = self.transformer(x, mask=mask, rotary_pos_dim=rotary_pos_dim)
         return out
+
+    class VisionTransformer(nn.Module):
+        def __init__(self, dim, x, image_size, patch_size, channels,
+                     patch_dropout=0.5,
+                     **kwargs):
+            super().__init__()
+            num_patches = (image_size // patch_size) **2
+            patch_dim = channels * patch_size **2
+
+            self.to_tokens = nn.Sequential(
+                Rearrange('b c (h p1) (w p2) -> (h w) (p1 p2 c)', p1=patch_size, p2=patch_size),
+                nn.Linear(patch_dim, dim)
+            )
+
+            self.pos_emb = nn.Embedding(num_patches, dim)
+            self.patch_dropout = PatchDropout(patch_dropout)
+
+            self.transformer = Transforemr(dim, **kwargs)
+
+            self.to_cls_tokens = nn.Sequential(
+                Reduce('b n d -> b d', 'mean'),
+                nn.Linear(dim, dim , bias=False),
+                Rearrange('b d -> b 1 d')
+            )
+
+        def forward(self, x, keep_all_patches=False):
+
+            device = x.device
+
+            x = self.to_tokens(x)
+            b, n, _ = x.shape
+
+            pos_emb = self.pos_emb(torch.arange(n, device=device))
+            x = x + rearrange(pos_emb, 'n d -> 1 n d')
+
+            x = self.patch_dropout(x, force_keep_all=keep_all_patches)
+
+            out = self.transformer(x)
+
+            cls_tokens = self.to_cls_tokens(out)
+            return torch.cat((cls_tokens, out), dim=1)
