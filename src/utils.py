@@ -1,5 +1,6 @@
 from functools import partial, wraps
 
+import math
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -35,6 +36,10 @@ def apply_rotary_pos_emb(freqs, t):
     t, t_pass = t[..., :rot_dim], t[..., rot_dim:]
     t = (t * freqs.cos()) + (rotate_half(t) * freqs.sin())
     return torch.cat((t, t_pass), dim = -1)
+
+class RearrangeImage(nn.Module):
+    def forward(self, x):
+        return rearrange(x, 'b (h w) c -> b c h w', h = int(math.sqrt(x.shape[1])))
 
 class LayerNorm(nn.Module):
     def __init__(self, dim):
