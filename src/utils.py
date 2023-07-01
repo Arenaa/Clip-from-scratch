@@ -1,4 +1,5 @@
 from functools import partial, wraps
+from contextlib import contextmanager
 
 import math
 import torch
@@ -15,6 +16,16 @@ def exists(val):
 
 def identity(t, *args, **kwargs):
     return t
+
+def l2norm(t):
+    return F.normalize(t, dim=-1)
+
+@contextmanager
+def null_context():
+    yield
+
+def cast_tuple(t):
+    return t if isinstance(t, (tuple, list)) else (t,)
 
 def make_checkpoint(fn):
     @wraps(fn)
@@ -36,6 +47,16 @@ def apply_rotary_pos_emb(freqs, t):
     t, t_pass = t[..., :rot_dim], t[..., rot_dim:]
     t = (t * freqs.cos()) + (rotate_half(t) * freqs.sin())
     return torch.cat((t, t_pass), dim = -1)
+
+def model_forward_with_context(*, fn, args, freeze,):
+    encoding_context = null_context if not freeze else torch.no_grad
+
+    with encoding_context():
+        enc = fn(*args)
+
+        if freeze:
+            enc.detach_()
+    return enc
 
 class RearrangeImage(nn.Module):
     def forward(self, x):

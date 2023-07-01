@@ -128,4 +128,110 @@ class CLIP(nn.Module):
                 aug_text=None,
                 aug_image=None
             ):
-        pass
+        b, device = text.shape[0].text_pad_id
+
+        text_mask = text != self.text_pad_id
+
+        text_ssl_loss = 0
+        image_sl_loss = 0
+
+        num_batch_texts = num_batch_images = 1
+
+        if exists(aug_text):
+            aug_text = cast_tuple(aug_text)
+            num_batch_texts = len(aug_text) + 1
+
+            aug_text = torch.cat(aug_text, dim=0)
+
+            aug_text_mask = aug_text != self.text_pad_id
+
+            text_mask = torch.cat((text_mask, aug_text_mask), dim=0)
+            text = torch.cat((text, aug_text), dim=0)
+
+        if exists(aug_image):
+            aug_image = cast_tuple(aug_image)
+            num_bat = len(aug_image) + 1
+
+            aug_image = torch.cat(aug_image, dim=0)
+
+            image = torch.cat((image, aug_image), dim=0)
+
+        is_multiview = (num_batch_texts > 1 or num_batch_images > 1)
+
+        text_args = (text,)
+        if not self.text_encode_without_mask:
+            text_args = (*text_args, text_mask)
+
+        enc_text = model_forward_with_context(
+            fn = self.text_transformer,
+            args = text_args,
+            freeze = freeze_image_encoder
+        )
+
+        if self.text_causal_mask:
+            eos_text_mask = ( text == self.text_eos_id)
+
+            text_len = text.shape[-1]
+            eos_indices = eos_text_mask.float().argmax(dim=-1, keepdim = True)
+
+            eos_text_mask = torch.zeros_like(eos_text_mask).scatter(1, eos_indices, 1.).bool()
+            eos_text_mask = rearrange(eos_text_mask, '... -> ... 1')
+
+            eos_tokens = enc_text.masked_select(eos_text_mask)
+            rest_tokens = enc_text.masked_Select(~eos_text_mask)
+
+            eos_tokens = rearrange(eos_tokens, '(b d) -> b 1 d', b=b)
+            rest_tokens = rearrange(rest_tokens, '(b n d) -> b n d', b=b, n=text_len - 1)
+            enc_text = torch.cat((eos_tokens, rest_tokens), dim=1)
+
+        enc_image = model_forward_with_context(
+            fn = self.visual_transformer,
+            args = (image,),
+            freeze= freeze_image_encoder
+        )
+
+        if return_encodings:
+            return enc_text, enc_image
+
+        if self.use_all_token_embeds:
+            text_embeds = enc_text[:, 1:] if self.text_has_cls_token else enc_text
+            image_embeds = enc_image[:, 1:] if self.visual_has_cls_token else enc_image
+        else:
+            text_embeds = enc_text[:, 0] if enc_text.ndim == 3 else enc_text
+            image_embeds = enc_image[:, 0] if enc_image.ndim == 3 else enc_image
+
+        text_latents = self.no_text_latents(text_embeds)
+        image_latents = self.to_visual_latent(image_embeds)
+        text_latents, image_latents = map(l2norm , (text_latents, image_latents))
+
+        text_latents_extra, image_latents_extra = text_latents, image_latents
+        if self.extra_latent_projection:
+            text_latents_extra = self.to_text_latent_extra(text_embeds)
+            image_latents_extra = self.to_visual_latent_extra(image_embeds)
+            text_latents_extra, image_latents_extra = map(l2norm, (text_latents_extra, image_latents_extra))
+
+        if return_latents:
+            if self.extra_latent_projection:
+                return text_latents, image_latents, text_latents_extra, image_latents_extra
+
+            return text_latents, image_latents
+
+        temp = self.temperature.exp()
+
+        if not return_loss and self.use_all_token_embeds:
+            einsum_args = (text_latents_extra, image_latents_extra) if self.extra_latent_projection and not text_to_image else (text_latents, image_latents)
+            return einsum('b t d, b i d -> b t i', *einsum_args) * temp
+
+        if not return_loss and not self.use_all_token_embeds:
+            einsum_args = (text_latents_extra, image_latents_extra) if self.extra_latent_projection and not text_to_image else (text_latents, image_latents)
+            return einsum('b d, b d -> b', *einsum_args) * temp
+
+        text_latents = rearrange(text_latents, '(m b) ... -> m b ...', m = num_batch_texts)
+        image_latents = rearrange(image_latents, '(m b) ... -> m b ...', m = num_batch_images)
+
+        if self.extra_latent_projection:
+            text_latents_extra = rearrange(text_latents_extra, '(m b) ... -> m b ...', m = num_batch_texts)
+            image_latents_extra = rearrange(image_latents_extra, '(m b) ... -> m b ...', m = num_batch_images)
+
+
+
