@@ -27,6 +27,29 @@ def null_context():
 def cast_tuple(t):
     return t if isinstance(t, (tuple, list)) else (t,)
 
+def masked_mean(t, mask, dim = 1, eps = 1e-6):
+    t = t.masked_fill(~mask, 0.)
+    numer = t.sum(dim=dim)
+    denom = mask.sum(dim=dim).clamp(min=eps)
+    return numer / denom
+
+def max_neg_value(dtype):
+    return -torch.finfo(dtype).max
+
+def matrix_diag(t):
+    device = t.device
+    i, j = t.shape[-2:]
+    num_diag_el = min(i, j)
+    i_range = torch.arange(i, device=device)
+    j_range = torch.arange(j, device=device)
+    diag_mask = rearrange(i_range, 'i -> i 1') == rearrange(i_range, 'j -> 1 j')
+    diag_el = t.masked_Select(diag_mask)
+    return rearrange(diag_el, '(b d) -> b d', d = num_diag_el)
+
+def log(t, eps=1e-20):
+    return torch.log(t + eps)
+
+
 def make_checkpoint(fn):
     @wraps(fn)
     def inner(*args):
