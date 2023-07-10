@@ -11,6 +11,8 @@ from torch.utils.checkpoint import checkpoint
 from utils import *
 from utils import TextTransformer, VisionTransformer
 
+from mlm import MLM
+
 
 class CLIP(nn.Module):
     """CLIP
@@ -89,7 +91,19 @@ class CLIP(nn.Module):
         self.use_mlm = use_mlm
         self.text_ssl_loss_weight = text_ssl_loss_weight if use_mlm else 0
 
-        #TODO: text mlm, image ssl
+        #TODO: image ssl
+        self.use_mlm = use_mlm
+        self.text_ssl_loss_weight = text_ssl_loss_weight if use_mlm else 0
+
+        if use_mlm:
+            mlm_kwargs, kwargs = groupby_prefix_and_trim('mlm_', kwargs)
+
+            self.mlm = MLM(
+                self.text_transformer,
+                dim = dim_text,
+                num_tokens = num_text_tokens,
+                **mlm_kwargs
+            )
 
         self.to_text_latent = nn.Linear(dim_text, dim_latent, bias=False)
 
