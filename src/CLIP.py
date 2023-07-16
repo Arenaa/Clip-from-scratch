@@ -12,6 +12,7 @@ from utils import *
 from utils import TextTransformer, VisionTransformer
 
 from mlm import MLM
+from visual_ssl import SimSiam, SimCLR
 
 
 class CLIP(nn.Module):
@@ -91,7 +92,6 @@ class CLIP(nn.Module):
         self.use_mlm = use_mlm
         self.text_ssl_loss_weight = text_ssl_loss_weight if use_mlm else 0
 
-        #TODO: image ssl
         self.use_mlm = use_mlm
         self.text_ssl_loss_weight = text_ssl_loss_weight if use_mlm else 0
 
@@ -104,6 +104,27 @@ class CLIP(nn.Module):
                 num_tokens = num_text_tokens,
                 **mlm_kwargs
             )
+
+        self.use_visual_ssl = use_visual_ssl or exists(visual_ssl)
+        self.image_ssl_loss_weight = image_ssl_loss_weight if use_visual_ssl else 0
+
+        if self.use_visual_ssl:
+            if exists(visual_ssl):
+                self.visual_ssl = visual_ssl
+
+            elif use_visual_ssl:
+                if visual_ssl_type == 'simsiam':
+                    ssl_type = partial(SimSiam, channels=channels)
+                elif visual_ssl == 'simclr':
+                    ssl_type = partial(SimCLR, temperature=simclr_temperature, channels=channels)
+                else:
+                    raise ValueError(f'unknown visual ssl_type')
+
+                self.visual_ssl = ssl_type(
+                    self.visual_transformer,
+                    image_size = visual_image_size,
+                    hidden_layer = visual_ssl_hidden_layer
+                )
 
         self.to_text_latent = nn.Linear(dim_text, dim_latent, bias=False)
 
